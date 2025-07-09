@@ -1,2 +1,4 @@
-opencv-python
+python >= 3.6
 PyQt5
+opencv-python
+numpy

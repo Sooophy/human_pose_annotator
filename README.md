@@ -58,11 +58,11 @@ pose_annotation_tool/
 
 1. Clone the repository
 ```bash
-git clone
+git clone https://github.com/Sooophy/human_pose_annotator.git
 ```
 2. Install dependencies:
 ```bash
-pip install PyQt5 opencv-python numpy
+pip install -r requirements.txt
 ```
 
 ## Usage
