@@ -47,7 +47,8 @@ class VideoProcessor:
             # Format filename with 12 digits using image_id (COCO format)
             filename = f"{image_id:012d}.jpg"
             output_path = os.path.join(output_dir, filename)
-            cv2.imwrite(output_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            # cv2.imwrite(output_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(output_path, frame)
             return filename
         return None
     

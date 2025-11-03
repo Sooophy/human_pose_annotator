@@ -71,7 +71,7 @@ pip install -r requirements.txt
 
 1. Launch the application:
 ```bash
-python annotation_gui.py
+python annotator.py
 ```
 
 2. Video Loading:
