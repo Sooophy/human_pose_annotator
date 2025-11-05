@@ -366,6 +366,10 @@ class IntegratedPoseTool(QMainWindow):
         reset_btn.clicked.connect(self.resetCurrent)
         buttons_layout.addWidget(reset_btn)
         
+        delete_frame_btn = QPushButton('Delete Selected Frame')
+        delete_frame_btn.clicked.connect(self.deleteSelectedFrame)
+        buttons_layout.addWidget(delete_frame_btn)
+        
         # Add exit button
         exit_btn = QPushButton('Exit Program')
         exit_btn.clicked.connect(self.exitProgram)
@@ -589,6 +593,120 @@ class IntegratedPoseTool(QMainWindow):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self.displayFrame(frame, annotation_data)
         self.updateMetadataDisplay(image_data, annotation_data)
+    
+
+    def deleteSelectedFrame(self):
+        """
+        Delete the selected saved frame (image + annotations) and update annotations.json.
+        If the selected dropdown item is not saved (no image id), inform the user and do nothing.
+        Status messages are written via addStatusMessage.
+        """
+        idx = self.frame_dropdown.currentIndex()
+        if idx < 0:
+            QMessageBox.information(self, "No Selection", "No frame selected to delete.")
+            self.addStatusMessage("Delete failed: no frame selected.", "red")
+            return
+
+        image_id = self.frame_dropdown.itemData(idx)
+        # If image_id is None or falsy => not saved
+        if not image_id:
+            QMessageBox.information(self, "Not Saved", "Selected frame is not a saved annotation; cannot delete.")
+            self.addStatusMessage(f"Delete aborted: frame at dropdown index {idx} is not saved.", "orange")
+            return
+
+        if not self.output_dir:
+            QMessageBox.warning(self, "No Output Directory", "Output directory not set; cannot delete files.")
+            self.addStatusMessage("Delete failed: no output directory set.", "red")
+            return
+
+        try:
+            # Find image entry
+            image_entry = next((img for img in self.annotations.get("images", []) if img.get("id") == image_id), None)
+            if image_entry is None:
+                QMessageBox.information(self, "Not Found", f"Annotation with ID {image_id} not found.")
+                self.addStatusMessage(f"Delete failed: annotation ID {image_id} not found in memory.", "red")
+                return
+
+            filename = image_entry.get("file_name")
+            frames_dir = os.path.join(self.output_dir, "frames")
+            image_path = os.path.join(frames_dir, filename) if filename else None
+
+           # prompt user
+            reply = QMessageBox.question(
+                self,
+                "Confirm Deletion",
+                f"Are you sure you want to delete frame {image_id} ({filename})?\n"
+                f"This will remove the image file and its annotations permanently.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                self.addStatusMessage(f"Deletion canceled for frame {image_id}.", "black")
+                return
+           
+
+            frames_dir = os.path.join(self.output_dir, "frames")
+            image_path = os.path.join(frames_dir, filename) if filename else None
+
+            # Remove image entry
+            self.annotations["images"] = [img for img in self.annotations.get("images", []) if img.get("id") != image_id]
+
+            # Remove annotations referencing this image_id
+            removed_ann_count = 0
+            remaining_annotations = []
+            for ann in self.annotations.get("annotations", []):
+                if ann.get("image_id") == image_id:
+                    removed_ann_count += 1
+                else:
+                    remaining_annotations.append(ann)
+            self.annotations["annotations"] = remaining_annotations
+
+            # Delete file if present
+            file_deleted = False
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                    file_deleted = True
+                except Exception as e_remove:
+                    self.addStatusMessage(f"Warning: failed to delete image file {image_path}: {str(e_remove)}", "orange")
+            # Save updated annotations.json
+            try:
+                with open(os.path.join(self.output_dir, 'annotations.json'), 'w') as f:
+                    json.dump(self.annotations, f, indent=2)
+            except Exception as e_save:
+                QMessageBox.warning(self, "Save Error", f"Failed to save annotations.json after deletion: {str(e_save)}")
+                self.addStatusMessage(f"Delete failed: could not save annotations.json: {str(e_save)}", "red")
+                return
+
+            # Refresh UI: update dropdown
+            self.updateFrameDropdown()
+
+            # Choose an item to show next: pick index 0 if exists, otherwise reset viewer
+            if self.frame_dropdown.count() > 0:
+                self.frame_dropdown.blockSignals(True)
+                self.frame_dropdown.setCurrentIndex(0)
+                self.frame_dropdown.blockSignals(False)
+                # Load the newly-selected frame (if any)
+                try:
+                    self.loadSelectedFrame(0)
+                except Exception:
+                    pass
+            else:
+                self.resetCurrent()
+
+            # Compose status message
+            msg = f"Deleted Image ID {image_id}."
+            if filename:
+                msg += f" Filename: {filename}. File deleted: {'yes' if file_deleted else 'no'}."
+            msg += f" Removed {removed_ann_count} annotation record(s)."
+
+            self.addStatusMessage(msg, "green" if removed_ann_count > 0 else "orange")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to delete selected frame: {str(e)}")
+            self.addStatusMessage(f"Delete failed: unexpected error: {str(e)}", "red")
+            return
+
+    
     
     def updateFrame(self, frame_number):
         self.current_frame_number = frame_number
