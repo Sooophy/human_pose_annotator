@@ -685,21 +685,26 @@ class IntegratedPoseTool(QMainWindow):
                 self.addStatusMessage(f"Delete failed: could not save annotations.json: {str(e_save)}", "red")
                 return
 
-            # Refresh UI: update dropdown
+            # --- Refresh UI and select appropriate next frame ---
             self.updateFrameDropdown()
 
-            # Choose an item to show next: pick index 0 if exists, otherwise reset viewer
-            if self.frame_dropdown.count() > 0:
-                self.frame_dropdown.blockSignals(True)
-                self.frame_dropdown.setCurrentIndex(0)
-                self.frame_dropdown.blockSignals(False)
-                # Load the newly-selected frame (if any)
-                try:
-                    self.loadSelectedFrame(0)
-                except Exception:
-                    pass
-            else:
+            count = self.frame_dropdown.count()
+            if count == 0:
+                # No annotated frames left
                 self.resetCurrent()
+                self.addStatusMessage("All annotations removed; viewer reset.", "black")
+            else:
+                # Choose where to go next
+                if idx > 0:
+                    new_index = idx - 1   # go to previous frame
+                else:
+                    new_index = 0         # deleted first frame -> move to next available
+
+                # Set index and load selected frame
+                self.frame_dropdown.setCurrentIndex(new_index)
+                self.loadSelectedFrame(new_index)
+                self.addStatusMessage(f"Moved to frame index {new_index} after deletion.", "black")
+
 
             # Compose status message
             msg = f"Deleted Image ID {image_id}."
@@ -778,7 +783,7 @@ class IntegratedPoseTool(QMainWindow):
         # Select it (this will trigger loadSelectedFrame via the connected signal)
         self.frame_dropdown.setCurrentIndex(next_idx)
         # Optional: give feedback
-        self.addStatusMessage(f"Moved to next annotated frame (index {next_idx}).", "black")
+        # self.addStatusMessage(f"Moved to next annotated frame (index {next_idx}).", "black")
 
 
     def prevAnnotatedFrame(self):
@@ -802,7 +807,7 @@ class IntegratedPoseTool(QMainWindow):
             return
 
         self.frame_dropdown.setCurrentIndex(prev_idx)
-        self.addStatusMessage(f"Moved to previous annotated frame (index {prev_idx}).", "black")
+        # self.addStatusMessage(f"Moved to previous annotated frame (index {prev_idx}).", "black")
 
     
     def saveAnnotations(self):
