@@ -6,8 +6,8 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QPushButton, QFileDialog, 
                            QListWidget, QGraphicsView, QGraphicsScene, QSlider,
-                           QSpinBox, QMessageBox, QComboBox, QTextEdit)
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QTextCursor
+                           QSpinBox, QMessageBox, QComboBox, QTextEdit, QShortcut)
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QTextCursor, QKeySequence
 from PyQt5.QtCore import Qt, QPointF, QRectF
 
 from pose_config import*
@@ -328,6 +328,13 @@ class IntegratedPoseTool(QMainWindow):
         self.frame_dropdown = QComboBox()
         self.frame_dropdown.currentIndexChanged.connect(self.loadSelectedFrame)
         frame_group.addWidget(self.frame_dropdown)
+        # Up arrow -> previous annotated frame
+        prev_shortcut = QShortcut(QKeySequence(Qt.Key_Up), self)
+        prev_shortcut.activated.connect(self.prevAnnotatedFrame)
+
+        # Down arrow -> next annotated frame
+        next_shortcut = QShortcut(QKeySequence(Qt.Key_Down), self)
+        next_shortcut.activated.connect(self.nextAnnotatedFrame)
         
         # Frame slider for video navigation
         frame_control = QHBoxLayout()
@@ -609,7 +616,7 @@ class IntegratedPoseTool(QMainWindow):
 
         image_id = self.frame_dropdown.itemData(idx)
         # If image_id is None or falsy => not saved
-        if not image_id:
+        if image_id is None:
             QMessageBox.information(self, "Not Saved", "Selected frame is not a saved annotation; cannot delete.")
             self.addStatusMessage(f"Delete aborted: frame at dropdown index {idx} is not saved.", "orange")
             return
@@ -632,17 +639,17 @@ class IntegratedPoseTool(QMainWindow):
             image_path = os.path.join(frames_dir, filename) if filename else None
 
            # prompt user
-            reply = QMessageBox.question(
-                self,
-                "Confirm Deletion",
-                f"Are you sure you want to delete frame {image_id} ({filename})?\n"
-                f"This will remove the image file and its annotations permanently.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                self.addStatusMessage(f"Deletion canceled for frame {image_id}.", "black")
-                return
+            # reply = QMessageBox.question(
+            #     self,
+            #     "Confirm Deletion",
+            #     f"Are you sure you want to delete frame {image_id} ({filename})?\n"
+            #     f"This will remove the image file and its annotations permanently.",
+            #     QMessageBox.Yes | QMessageBox.No,
+            #     QMessageBox.No
+            # )
+            # if reply == QMessageBox.No:
+            #     self.addStatusMessage(f"Deletion canceled for frame {image_id}.", "black")
+            #     return
            
 
             frames_dir = os.path.join(self.output_dir, "frames")
@@ -745,6 +752,58 @@ class IntegratedPoseTool(QMainWindow):
                     "keypoints": [0] * (len(self.pose_config.keypoint_names) * 3)
                 }
                 self.updateMetadataDisplay(temp_image_data, temp_annotation_data)
+    
+    
+    def nextAnnotatedFrame(self):
+        """
+        Move to the next annotated frame (next item in the frame_dropdown).
+        If already at last, do nothing and show a status message.
+        """
+        count = self.frame_dropdown.count()
+        if count == 0:
+            self.addStatusMessage("No annotated frames available.", "orange")
+            return
+
+        current = self.frame_dropdown.currentIndex()
+        # If nothing selected, treat current as -1 and move to 0
+        if current < 0:
+            next_idx = 0
+        else:
+            next_idx = min(current + 1, count - 1)
+
+        if next_idx == current:
+            self.addStatusMessage("Already at last annotated frame.", "black")
+            return
+
+        # Select it (this will trigger loadSelectedFrame via the connected signal)
+        self.frame_dropdown.setCurrentIndex(next_idx)
+        # Optional: give feedback
+        self.addStatusMessage(f"Moved to next annotated frame (index {next_idx}).", "black")
+
+
+    def prevAnnotatedFrame(self):
+        """
+        Move to the previous annotated frame (previous item in the frame_dropdown).
+        If already at first, do nothing and show a status message.
+        """
+        count = self.frame_dropdown.count()
+        if count == 0:
+            self.addStatusMessage("No annotated frames available.", "orange")
+            return
+
+        current = self.frame_dropdown.currentIndex()
+        if current < 0:
+            prev_idx = 0
+        else:
+            prev_idx = max(current - 1, 0)
+
+        if prev_idx == current:
+            self.addStatusMessage("Already at first annotated frame.", "black")
+            return
+
+        self.frame_dropdown.setCurrentIndex(prev_idx)
+        self.addStatusMessage(f"Moved to previous annotated frame (index {prev_idx}).", "black")
+
     
     def saveAnnotations(self):
         if not self.output_dir:
