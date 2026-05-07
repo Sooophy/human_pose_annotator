@@ -8,6 +8,7 @@ A lightweight, privacy-focused tool specifically designed for annotating single 
 ## Why Choose This Tool?
 
 - **Video-Centric**: Directly works with video files, automatically extracting frames for annotation
+- **Image Sequence Support**: Loads folders of zero-based numbered images as video-like frame sequences
 - **Smart Organization**: 
   - Supports multiple videos in the same annotation project
   - Helps avoid duplicate labeling of same frame from the same videos
@@ -34,6 +35,7 @@ The tool follows the COCO format standard while providing specialized features f
   - Frame-specific information
 - Zoom and pan capabilities
 - Dark mode interface for better visibility
+- Folder-based image sequence loading with filenames like `000000000000.jpg`
 
 ## Requirements
 
@@ -48,10 +50,10 @@ numpy
 
 ```
 pose_annotation_tool/
-├── pose_config.py        # Configuration management
-├── annotation_gui.py     # Main GUI application
-├── README.md            # This documentation
-└── frames/              # Directory for frame images
+- pose_config.py        # Configuration management
+- annotator.py          # Main GUI application
+- README.md             # This documentation
+- frames/               # Directory for frame images
 ```
 
 ## Installation
@@ -71,15 +73,18 @@ pip install -r requirements.txt
 
 1. Launch the application:
 ```bash
-python annotation_gui.py
+python annotator.py
 ```
 
-2. Video Loading:
+2. Video or Image Folder Loading:
    - Click "Load Video" to select your video file(s)
+   - Click "Load Image Folder" and select any image in a folder of numbered images
    - The tool will automatically:
      - Extract frames from the video
      - Create a unique identifier for each video
      - Organize frames in the project directory
+   - For image folders, the folder name is used as the source/video name
+   - Image filenames should use zero-based numeric stems such as `000000000000.jpg`, `000000000001.jpg`, and `000000000002.jpg`
    - Multiple videos can be loaded into the same project
    - Previously extracted frames are detected to avoid duplication
 
@@ -93,6 +98,7 @@ python annotation_gui.py
 
 1. Top Control Buttons:
    - "Load Video": Select video file to annotate
+   - "Load Image Folder": Select a folder of numbered image frames
    - "Load Annotations": Import existing annotations
    - "Set Output Directory": Choose save location
 
@@ -147,7 +153,7 @@ python annotation_gui.py
 
 4. Status Display:
    ```
-   Source: Video only (not annotated)/annotaiton only/both video and annotations
+   Source: Current source only (not annotated)/annotation only/both source and annotations
    Video: [filename].mp4
    Frame: [number]
    Image: [status]
@@ -185,6 +191,8 @@ python annotation_gui.py
    - Use "Set Output Directory" to specify where annotations are saved
    - Annotations are saved in COCO format JSON
    - Each save updates the annotation file with current frame data
+   - For image folders, the folder basename is saved as the video/source name
+   - Numeric filename stems are saved as zero-based frame numbers
 
 ### Understanding the Interface
 
@@ -200,7 +208,7 @@ python annotation_gui.py
    - Updates in real-time as you annotate
 
 3. Status Messages:
-   - Bottom status bar shows saving history with time, frame, video souce, and imageID (if updating)
+   - Bottom status bar shows saving history with time, frame, video source, and imageID (if updating)
      Note: new frame saving will show the ID as None, and updated frame saving will show the imageID in the annotation
 
 
@@ -335,7 +343,7 @@ Feel free to submit issues and enhancement requests.
 
 The MIT License (MIT)
 
-Copyright (c) 2011-2025 The Bootstrap Authors
+Copyright (c) 2025 human_pose_annotator contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
