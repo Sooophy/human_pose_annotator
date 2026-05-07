@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QListWidget, QGraphicsView, QGraphicsScene, QSlider,
                            QSpinBox, QMessageBox, QComboBox, QTextEdit)
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QTextCursor
-from PyQt5.QtCore import Qt, QPointF, QRectF
+from PyQt5.QtCore import Qt, QRectF
 
 from pose_config import*
 
@@ -16,6 +16,7 @@ from pose_config import*
 class VideoProcessor:
     def __init__(self):
         self.video_path = None
+        self.video_file = None
         self.cap = None
         self.total_frames = 0
         self.fps = 0
@@ -23,12 +24,35 @@ class VideoProcessor:
         self.frame_height = 0
         
     def load_video(self, video_path):
+        if self.cap is not None:
+            self.cap.release()
+
         self.video_path = video_path
+        self.video_file = os.path.basename(video_path)
         self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+            self.total_frames = 0
+            self.fps = 0
+            self.frame_width = 0
+            self.frame_height = 0
+            return False
+
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if self.total_frames <= 0:
+            self.cap.release()
+            self.cap = None
+            return False
+        return True
+
+    def frame_range(self):
+        if self.total_frames <= 0:
+            return None
+        return 0, self.total_frames - 1
         
     def get_frame(self, frame_number):
         if self.cap is None:
@@ -47,13 +71,72 @@ class VideoProcessor:
             # Format filename with 12 digits using image_id (COCO format)
             filename = f"{image_id:012d}.jpg"
             output_path = os.path.join(output_dir, filename)
-            cv2.imwrite(output_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(output_path, frame)
             return filename
         return None
     
     def close(self):
         if self.cap is not None:
             self.cap.release()
+
+
+class ImageFolderProcessor:
+    valid_extensions = {".jpg", ".jpeg", ".png"}
+
+    def __init__(self):
+        self.folder_path = None
+        self.video_file = None
+        self.frame_paths = {}
+        self.frame_numbers = []
+        self.frame_width = 0
+        self.frame_height = 0
+        self.fps = 0
+
+    def load_folder(self, folder_path):
+        self.folder_path = folder_path
+        self.video_file = os.path.basename(os.path.normpath(folder_path))
+        self.frame_paths = {}
+        self.frame_numbers = []
+        self.frame_width = 0
+        self.frame_height = 0
+
+        for filename in os.listdir(folder_path):
+            stem, ext = os.path.splitext(filename)
+            if ext.lower() not in self.valid_extensions or not stem.isdigit():
+                continue
+            frame_number = int(stem)
+            self.frame_paths[frame_number] = os.path.join(folder_path, filename)
+
+        self.frame_numbers = sorted(self.frame_paths)
+        if not self.frame_numbers:
+            return False
+
+        first_frame = self.get_frame(self.frame_numbers[0])
+        if first_frame is None:
+            return False
+
+        self.frame_height, self.frame_width = first_frame.shape[:2]
+        return True
+
+    def frame_range(self):
+        if not self.frame_numbers:
+            return None
+        return self.frame_numbers[0], self.frame_numbers[-1]
+
+    def get_frame(self, frame_number):
+        image_path = self.frame_paths.get(frame_number)
+        if image_path is None:
+            return None
+        return cv2.imread(image_path)
+
+    def save_frame(self, frame_number, output_dir, image_id):
+        frame = self.get_frame(frame_number)
+        if frame is not None:
+            filename = f"{image_id:012d}.jpg"
+            output_path = os.path.join(output_dir, filename)
+            cv2.imwrite(output_path, frame)
+            return filename
+        return None
 
 class ImageViewer(QGraphicsView):
     def __init__(self, pose_config, parent=None):
@@ -129,7 +212,7 @@ class KeypointScene(QGraphicsScene):
             if kp_name == self.current_keypoint:
                 color = QColor(255, 255, 0)  # Highlight in yellow
             else:
-                color = base_color
+                color = QColor(base_color)
             
             # Adjust opacity based on visibility
             if v == 1:  # Labeled but not visible
@@ -231,9 +314,14 @@ class IntegratedPoseTool(QMainWindow):
         super().__init__()
         self.pose_config = pose_config  # Store the pose config
         self.video_processor = VideoProcessor()
+        self.image_folder_processor = ImageFolderProcessor()
+        self.active_source = None
         self.current_frame_number = 0
         self.output_dir = None
-        self.current_working_image = None  # To track if we are working on video or annotation
+        self.current_image_data = None
+        self.current_annotation_data = None
+        self.current_frame_bgr = None
+        self.is_syncing_frame_controls = False
         self.annotations = self.create_empty_annotations()
         self.initUI()
 
@@ -266,12 +354,13 @@ class IntegratedPoseTool(QMainWindow):
                 try:
                     with open(annotation_file, 'r') as f:
                         self.annotations = json.load(f)
+                    self.normalizeAnnotations()
                     # Update frame dropdown with existing annotations
                     self.updateFrameDropdown()
                     QMessageBox.information(self, "Loaded Annotations", 
                                         f"Loaded existing annotations from:\n{annotation_file}\n"
-                                        f"Contains {len(self.annotations['images'])} images and "
-                                        f"{len(self.annotations['annotations'])} annotations.")
+                                        f"Contains {len(self.annotations.get('images', []))} images and "
+                                        f"{len(self.annotations.get('annotations', []))} annotations.")
                 except Exception as e:
                     QMessageBox.warning(self, "Error", f"Failed to load existing annotations: {str(e)}")
             else:
@@ -309,6 +398,10 @@ class IntegratedPoseTool(QMainWindow):
         load_video_btn = QPushButton('Load Video')
         load_video_btn.clicked.connect(self.loadVideo)
         file_group.addWidget(load_video_btn)
+
+        load_image_folder_btn = QPushButton('Load Image Folder')
+        load_image_folder_btn.clicked.connect(self.loadImageFolder)
+        file_group.addWidget(load_image_folder_btn)
         
         load_annotations_btn = QPushButton('Load Annotations')
         load_annotations_btn.clicked.connect(self.loadAnnotations)
@@ -387,23 +480,14 @@ class IntegratedPoseTool(QMainWindow):
         right_layout.addWidget(self.message_prompt)
     
     def saveBtnClicked(self):
-        # First, get the current frame info from the metadata display
-        source_text = self.info_label.text()
-        try:
-            video_line = next((line for line in source_text.split('\n') if line.startswith('Video:')), "Video: Unknown")
-            frame_line = next((line for line in source_text.split('\n') if line.startswith('Frame:')), "Frame: 0")
-            id_line = next((line for line in source_text.split('\n') if line.startswith('Image ID:')), "Image ID: None")
-            
-            current_video = video_line.split(': ')[1]
-            current_frame = frame_line.split(': ')[1]
-            current_id = id_line.split(': ')[1]
-        except:
-            current_video = "Unknown"
-            current_frame = "Unknown"
-            current_id = "Unknown"
-        
-        # Call the original save function
-        self.saveAnnotations()
+        saved = self.saveAnnotations()
+        if not saved:
+            return
+
+        image_data = self.current_image_data or {}
+        current_video = image_data.get("video_file", "Unknown")
+        current_frame = image_data.get("frame_number", "Unknown")
+        current_id = image_data.get("id", "Unknown")
         
         # Add status message
         message = f"Saved: Frame {current_frame} (ID: {current_id}) from {current_video}"
@@ -443,6 +527,95 @@ class IntegratedPoseTool(QMainWindow):
             else:
                 item.setBackground(QColor(255, 255, 255))  # White for unlabeled
 
+    def find_image(self, image_id):
+        return next((img for img in self.annotations.get('images', [])
+                     if img.get('id') == image_id), None)
+
+    def find_annotation(self, image_id):
+        return next((ann for ann in self.annotations.get('annotations', [])
+                     if ann.get('image_id') == image_id), None)
+
+    def find_existing_frame(self, video_file, frame_number):
+        for image in self.annotations.get("images", []):
+            if (image.get("video_file") == video_file and
+                    image.get("frame_number") == frame_number):
+                return image, self.find_annotation(image.get("id"))
+        return None, None
+
+    def build_keypoints(self):
+        keypoints = []
+        for kp_name in self.pose_config.keypoint_names:
+            if kp_name in self.viewer.scene().keypoints:
+                x, y, v = self.viewer.scene().keypoints[kp_name]
+                keypoints.extend([x, y, v])
+            else:
+                keypoints.extend([0, 0, 0])
+        return keypoints
+
+    def next_annotation_id(self):
+        return max([ann.get("id", 0) for ann in self.annotations.get("annotations", [])],
+                   default=0) + 1
+
+    def setFrameControls(self, frame_number):
+        self.is_syncing_frame_controls = True
+        self.frame_slider.blockSignals(True)
+        self.frame_spinbox.blockSignals(True)
+        self.frame_slider.setValue(frame_number)
+        self.frame_spinbox.setValue(frame_number)
+        self.frame_slider.blockSignals(False)
+        self.frame_spinbox.blockSignals(False)
+        self.is_syncing_frame_controls = False
+
+    def setFrameRange(self, minimum, maximum):
+        self.is_syncing_frame_controls = True
+        self.frame_slider.blockSignals(True)
+        self.frame_spinbox.blockSignals(True)
+        self.frame_slider.setMinimum(minimum)
+        self.frame_spinbox.setMinimum(minimum)
+        self.frame_slider.setMaximum(maximum)
+        self.frame_spinbox.setMaximum(maximum)
+        self.frame_slider.blockSignals(False)
+        self.frame_spinbox.blockSignals(False)
+        self.is_syncing_frame_controls = False
+
+    def setCurrentFrameState(self, image_data, annotation_data, frame_bgr):
+        self.current_image_data = image_data
+        self.current_annotation_data = annotation_data
+        self.current_frame_bgr = frame_bgr
+        self.current_frame_number = image_data.get("frame_number", 0)
+
+    def active_source_matches(self, image_data):
+        return self.active_source is not None and self.active_source.video_file == image_data.get("video_file")
+
+    def activateSource(self, source):
+        self.active_source = source
+        min_frame, max_frame = source.frame_range()
+        self.setFrameRange(min_frame, max_frame)
+        self.updateFrame(min_frame)
+
+    def normalizeAnnotations(self):
+        self.annotations.setdefault('images', [])
+        self.annotations.setdefault('annotations', [])
+        self.annotations.setdefault('categories', [self.pose_config.get_category_config()])
+
+    def writeAnnotationsFile(self):
+        with open(os.path.join(self.output_dir, 'annotations.json'), 'w') as f:
+            json.dump(self.annotations, f, indent=2)
+
+    def selectFrameDropdownByImageId(self, image_id):
+        for i in range(self.frame_dropdown.count()):
+            if self.frame_dropdown.itemData(i) == image_id:
+                self.frame_dropdown.blockSignals(True)
+                self.frame_dropdown.setCurrentIndex(i)
+                self.frame_dropdown.blockSignals(False)
+                return i
+        return -1
+
+    def showFrameState(self, image_data, annotation_data, frame_bgr):
+        self.setCurrentFrameState(image_data, annotation_data, frame_bgr)
+        self.displayFrame(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), annotation_data)
+        self.updateMetadataDisplay(image_data, annotation_data)
+
     # NEW: Enhanced load annotations method
     def loadAnnotations(self):
         annotations_file, _ = QFileDialog.getOpenFileName(
@@ -454,6 +627,7 @@ class IntegratedPoseTool(QMainWindow):
         try:
             with open(annotations_file, 'r') as f:
                 self.annotations = json.load(f)
+            self.normalizeAnnotations()
             
             # Set output directory to annotations location
             self.output_dir = os.path.dirname(annotations_file)
@@ -462,14 +636,16 @@ class IntegratedPoseTool(QMainWindow):
             self.updateFrameDropdown()
             
             QMessageBox.information(self, "Loaded Annotations", 
-                                  f"Successfully loaded {len(self.annotations['images'])} "
-                                  f"images and {len(self.annotations['annotations'])} annotations.")
+                                  f"Successfully loaded {len(self.annotations.get('images', []))} "
+                                  f"images and {len(self.annotations.get('annotations', []))} annotations.")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to load annotations: {str(e)}")
             
     def updateFrameDropdown(self):
         self.frame_dropdown.clear()
-        for image in self.annotations['images']:
+        for image in self.annotations.get('images', []):
+            if 'id' not in image or 'frame_number' not in image:
+                continue
             self.frame_dropdown.addItem(
                 f"Frame {image['frame_number']} (ID: {image['id']})", 
                 userData=image['id'])
@@ -499,8 +675,10 @@ class IntegratedPoseTool(QMainWindow):
         
         # Load existing keypoints if provided
         if annotation_data:
-            keypoints = annotation_data['keypoints']
+            keypoints = annotation_data.get('keypoints', [])
             for i, kp_name in enumerate(self.pose_config.keypoint_names):
+                if i * 3 + 2 >= len(keypoints):
+                    break
                 x = keypoints[i * 3]
                 y = keypoints[i * 3 + 1]
                 v = keypoints[i * 3 + 2]
@@ -511,29 +689,31 @@ class IntegratedPoseTool(QMainWindow):
             new_scene.update_keypoint_visuals()
         
         # Preserve the selected keypoint
-        current_keypoint = self.keypoint_list.currentItem().text()
-        new_scene.set_current_keypoint(current_keypoint)
+        current_item = self.keypoint_list.currentItem()
+        if current_item:
+            new_scene.set_current_keypoint(current_item.text())
 
     def updateMetadataDisplay(self, image_data, annotation_data):
         bbox = annotation_data.get('bbox', [0, 0, 0, 0])
         
         # Determine the source
         if image_data.get('id') is None:
-            source = "Video only (not annotated)"
+            source = "Current source only (not annotated)"
         else:
-            if hasattr(self.video_processor, 'video_file') and self.video_processor.video_file == image_data.get('video_file'):
-                source = "Annotation and Video"
+            if self.active_source_matches(image_data):
+                source = "Annotation and Current Source"
             else:
                 source = "Annotation only"
         
         # Get visibility counts
-        visible_points = len([k for k in annotation_data['keypoints'][2::3] if k == 2])
-        estimated_points = len([k for k in annotation_data['keypoints'][2::3] if k == 1])
+        keypoints = annotation_data.get('keypoints', [])
+        visible_points = len([k for k in keypoints[2::3] if k == 2])
+        estimated_points = len([k for k in keypoints[2::3] if k == 1])
         
         info_text = (
             f"Source: {source}\n"
             f"Video: {image_data.get('video_file', 'N/A')}\n"
-            f"Frame: {image_data['frame_number']}\n"
+            f"Frame: {image_data.get('frame_number', 'N/A')}\n"
             f"Image ID: {image_data.get('id', 'N/A')}\n"
             f"BBox: x={bbox[0]:.1f}, y={bbox[1]:.1f}, "
             f"w={bbox[2]:.1f}, h={bbox[3]:.1f}\n"
@@ -547,110 +727,131 @@ class IntegratedPoseTool(QMainWindow):
         video_path, _ = QFileDialog.getOpenFileName(
             self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)")
         if video_path:
-            self.video_processor.video_file = os.path.basename(video_path)
-            self.video_processor.load_video(video_path)
-            self.frame_slider.setMaximum(self.video_processor.total_frames - 1)
-            self.frame_spinbox.setMaximum(self.video_processor.total_frames - 1)
-            self.updateFrame(0)
+            if not self.video_processor.load_video(video_path):
+                QMessageBox.warning(self, "Error", f"Failed to load video or video has no frames:\n{video_path}")
+                return
+
+            self.activateSource(self.video_processor)
+
+    def loadImageFolder(self):
+        image_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Any Image in the Folder",
+            "",
+            "Image Files (*.jpg *.jpeg *.png)"
+        )
+        if not image_path:
+            return
+
+        folder_path = os.path.dirname(image_path)
+        if not self.image_folder_processor.load_folder(folder_path):
+            QMessageBox.warning(
+                self,
+                "Error",
+                "No readable numbered images found in the selected folder.\n"
+                "Expected names like 000000000000.jpg, 000000000001.jpg, ..."
+            )
+            return
+
+        self.video_processor.close()
+        self.activateSource(self.image_folder_processor)
 
     def loadSelectedFrame(self, index):
         if index < 0:
             return
             
         image_id = self.frame_dropdown.currentData()
-        image_data = next(img for img in self.annotations['images'] 
-                         if img['id'] == image_id)
+        image_data = self.find_image(image_id)
+        if image_data is None:
+            QMessageBox.warning(self, "Error", f"Annotation image ID not found: {image_id}")
+            return
         
         # Load corresponding annotation
-        annotation_data = next(ann for ann in self.annotations['annotations'] 
-                             if ann['image_id'] == image_id)
+        annotation_data = self.find_annotation(image_id)
+        if annotation_data is None:
+            QMessageBox.warning(self, "Error", f"Annotation data not found for image ID: {image_id}")
+            return
         
-        # Sync video frame if the video matches
-        if (hasattr(self.video_processor, 'video_file') and 
-            self.video_processor.video_file == image_data['video_file']):
-            self.current_frame_number = image_data['frame_number']
-            self.frame_slider.setValue(self.current_frame_number)
-            self.frame_spinbox.setValue(self.current_frame_number)
-            
-            # Get frame from video
-            frame = self.video_processor.get_frame(self.current_frame_number)
+        # Sync active source frame if it matches the annotation source.
+        if self.active_source_matches(image_data):
+            self.current_frame_number = image_data.get('frame_number', 0)
+            self.setFrameControls(self.current_frame_number)
+            frame = self.active_source.get_frame(self.current_frame_number)
         else:
             # Load from saved frame
-            image_path = os.path.join(self.output_dir, "frames", image_data['file_name'])
+            file_name = image_data.get('file_name')
+            if not file_name:
+                QMessageBox.warning(self, "Error", f"Image file name missing for image ID: {image_id}")
+                return
+            image_path = os.path.join(self.output_dir, "frames", file_name)
             if not os.path.exists(image_path):
                 QMessageBox.warning(self, "Error", f"Image file not found: {image_path}")
                 return
             frame = cv2.imread(image_path)
         
         if frame is None:
+            QMessageBox.warning(self, "Error", "Failed to load frame image.")
             return
-            
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self.displayFrame(frame, annotation_data)
-        self.updateMetadataDisplay(image_data, annotation_data)
+
+        self.showFrameState(image_data, annotation_data, frame)
     
     def updateFrame(self, frame_number):
+        if self.is_syncing_frame_controls:
+            return
+        if self.active_source is None:
+            return
+
+        frame = self.active_source.get_frame(frame_number)
+        if frame is None:
+            if self.active_source is self.image_folder_processor:
+                self.addStatusMessage(f"Frame {frame_number} is missing from the selected image folder.", "red")
+            return
+
         self.current_frame_number = frame_number
-        self.frame_slider.setValue(frame_number)
-        self.frame_spinbox.setValue(frame_number)
-        
-        frame = self.video_processor.get_frame(frame_number)
-        if frame is not None:
-            # Check if this frame is already annotated
-            existing_annotation = None
-            existing_image = None
-            if hasattr(self.video_processor, 'video_file'):
-                for img in self.annotations["images"]:
-                    if (img["video_file"] == self.video_processor.video_file and 
-                        img["frame_number"] == frame_number):
-                        existing_image = img
-                        existing_annotation = next(
-                            ann for ann in self.annotations["annotations"] 
-                            if ann["image_id"] == img["id"])
-                        break
-            
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.displayFrame(frame, existing_annotation)
-            
-            if existing_image and existing_annotation:
-                self.updateMetadataDisplay(existing_image, existing_annotation)
-            else:
-                # Create temporary image data for video-only frame
-                temp_image_data = {
-                    "video_file": getattr(self.video_processor, 'video_file', 'N/A'),
-                    "frame_number": frame_number,
-                    "id": None
-                }
-                temp_annotation_data = {
-                    "bbox": [0, 0, 0, 0],
-                    "keypoints": [0] * (len(self.pose_config.keypoint_names) * 3)
-                }
-                self.updateMetadataDisplay(temp_image_data, temp_annotation_data)
+        self.setFrameControls(frame_number)
+
+        source_name = self.active_source.video_file
+        existing_image, existing_annotation = self.find_existing_frame(source_name, frame_number)
+        if existing_image and existing_annotation:
+            self.showFrameState(existing_image, existing_annotation, frame)
+        else:
+            temp_image_data = {
+                "video_file": source_name or 'N/A',
+                "frame_number": frame_number,
+                "id": None
+            }
+            temp_annotation_data = {
+                "bbox": [0, 0, 0, 0],
+                "keypoints": [0] * (len(self.pose_config.keypoint_names) * 3)
+            }
+            self.showFrameState(temp_image_data, temp_annotation_data, frame)
     
     def saveAnnotations(self):
         if not self.output_dir:
             QMessageBox.warning(self, "Warning", "Please set output directory first!")
-            return
+            return False
+
+        if self.current_image_data is None or self.current_frame_bgr is None:
+            QMessageBox.warning(self, "Warning", "Please load a video frame or annotation frame first!")
+            return False
         
-        # Check for existing annotation by matching image data from metadata
-        source_text = self.info_label.text()
-        # Parse video and frame from metadata
-        video_line = next(line for line in source_text.split('\n') if line.startswith('Video:'))
-        frame_line = next(line for line in source_text.split('\n') if line.startswith('Frame:'))
-        current_video = video_line.split(': ')[1]
-        current_frame = int(frame_line.split(': ')[1])
+        current_video = self.current_image_data.get("video_file")
+        current_frame = self.current_image_data.get("frame_number")
+        if current_video in (None, "N/A") or current_frame is None:
+            QMessageBox.warning(self, "Warning", "Current frame does not have video metadata to save.")
+            return False
         
         existing_annotation = None
         existing_image = None
-        
-        for i, img in enumerate(self.annotations["images"]):
-            if (img["video_file"] == current_video and 
-                img["frame_number"] == current_frame):
-                existing_image = img
-                existing_annotation = next(
-                    (ann for ann in self.annotations["annotations"] 
-                    if ann["image_id"] == img["id"]), None)
-                break
+        existing_image, existing_annotation = self.find_existing_frame(current_video, current_frame)
+        if existing_image and not existing_annotation:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Frame {current_frame} from video \"{current_video}\" has image metadata "
+                "but no matching annotation. Please repair the annotation file before saving."
+            )
+            return False
                     
         if existing_annotation:
             reply = QMessageBox.question(self, 'Duplicate Frame',
@@ -664,13 +865,7 @@ class IntegratedPoseTool(QMainWindow):
                 image_id = existing_image["id"]
                 
                 # Prepare keypoints from current scene
-                keypoints = []
-                for kp_name in self.pose_config.keypoint_names:
-                    if kp_name in self.viewer.scene().keypoints:
-                        x, y, v = self.viewer.scene().keypoints[kp_name]
-                        keypoints.extend([x, y, v])
-                    else:
-                        keypoints.extend([0, 0, 0])
+                keypoints = self.build_keypoints()
                 
                 # Calculate bbox from current scene
                 bbox = self.viewer.scene().calculate_bbox() or [0, 0, 0, 0]
@@ -687,50 +882,50 @@ class IntegratedPoseTool(QMainWindow):
                 # Update image info timestamp
                 existing_image["date_captured"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
-                # Save to file
-                with open(os.path.join(self.output_dir, 'annotations.json'), 'w') as f:
-                    json.dump(self.annotations, f, indent=2)
+                self.writeAnnotationsFile()
+
+                self.current_image_data = existing_image
+                self.current_annotation_data = existing_annotation
+                self.updateFrameDropdown()
+                self.selectFrameDropdownByImageId(image_id)
+                self.updateMetadataDisplay(existing_image, existing_annotation)
                 
                 QMessageBox.information(self, "Success", 
                                       f"Frame {current_frame} updated successfully!")
-                return
+                return True
             else:
-                return
+                return False
         
         # If not updating existing annotation, proceed with new annotation...
+        if self.active_source is None:
+            QMessageBox.warning(self, "Warning", "Please load a video or image folder before saving a new annotation.")
+            return False
+
         frames_dir = os.path.join(self.output_dir, "frames")
         os.makedirs(frames_dir, exist_ok=True)
         
         # For new annotation, get next available ID
-        image_id = max([img["id"] for img in self.annotations["images"]], default=0) + 1
-        
-        frames_dir = os.path.join(self.output_dir, "frames")
-        os.makedirs(frames_dir, exist_ok=True)
+        image_id = max([img.get("id", 0) for img in self.annotations.get("images", [])],
+                       default=0) + 1
         
         # Save current frame
-        filename = self.video_processor.save_frame(self.current_frame_number, frames_dir, image_id)
+        filename = self.active_source.save_frame(current_frame, frames_dir, image_id)
         
         if filename:
             # Create image info
             image_info = {
                 "id": image_id,
                 "file_name": filename,
-                "video_file": self.video_processor.video_file,
-                "frame_number": self.current_frame_number,
-                "width": self.video_processor.frame_width,
-                "height": self.video_processor.frame_height,
-                "fps": self.video_processor.fps,
+                "video_file": current_video,
+                "frame_number": current_frame,
+                "width": self.active_source.frame_width,
+                "height": self.active_source.frame_height,
+                "fps": self.active_source.fps,
                 "date_captured": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             
             # Prepare keypoints
-            keypoints = []
-            for kp_name in self.pose_config.keypoint_names:
-                if kp_name in self.viewer.scene().keypoints:
-                    x, y, v = self.viewer.scene().keypoints[kp_name]
-                    keypoints.extend([x, y, v])
-                else:
-                    keypoints.extend([0, 0, 0])
+            keypoints = self.build_keypoints()
             
             # Calculate bbox
             bbox = self.viewer.scene().calculate_bbox() or [0, 0, 0, 0]
@@ -738,7 +933,7 @@ class IntegratedPoseTool(QMainWindow):
             
             # Create annotation
             annotation = {
-                "id": len(self.annotations["annotations"]) + 1,
+                "id": self.next_annotation_id(),
                 "image_id": image_id,
                 "category_id": 1,
                 "keypoints": keypoints,
@@ -753,10 +948,10 @@ class IntegratedPoseTool(QMainWindow):
             # Update annotations
             self.annotations["images"].append(image_info)
             self.annotations["annotations"].append(annotation)
+            self.current_image_data = image_info
+            self.current_annotation_data = annotation
             
-            # Save to file
-            with open(os.path.join(self.output_dir, 'annotations.json'), 'w') as f:
-                json.dump(self.annotations, f, indent=2)
+            self.writeAnnotationsFile()
             
             
             # Update frame dropdown
@@ -764,29 +959,24 @@ class IntegratedPoseTool(QMainWindow):
             
             # Refresh the display
             # Get the newly created/updated image ID
-            new_image_id = image_id  # This is already set for both new and existing annotations
-            
-            # Find the index in dropdown for this frame
-            for i in range(self.frame_dropdown.count()):
-                if self.frame_dropdown.itemData(i) == new_image_id:
-                    # Block signals temporarily to avoid triggering loadSelectedFrame twice
-                    self.frame_dropdown.blockSignals(True)
-                    self.frame_dropdown.setCurrentIndex(i)
-                    self.frame_dropdown.blockSignals(False)
-                    # Manually refresh the frame after setting index
-                    self.loadSelectedFrame(i)
-                    break
+            selected_index = self.selectFrameDropdownByImageId(image_id)
+            if selected_index >= 0:
+                self.loadSelectedFrame(selected_index)
     
         
             QMessageBox.information(self, "Success", 
                                   f"Frame {current_frame} saved successfully!")
             
-            self.frame_dropdown.setCurrentIndex(i)
+            return True
+        else:
+            QMessageBox.warning(self, "Error", "Failed to save current frame image.")
+            return False
             
 
     def resetSelectedKeypoint(self):
-        current_keypoint = self.keypoint_list.currentItem().text()
-        self.viewer.scene().reset_keypoint(current_keypoint)
+        current_item = self.keypoint_list.currentItem()
+        if current_item:
+            self.viewer.scene().reset_keypoint(current_item.text())
         
     def resetCurrent(self):
         self.viewer.scene().keypoints.clear()
