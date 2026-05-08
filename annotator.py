@@ -480,11 +480,10 @@ class IntegratedPoseTool(QMainWindow):
         right_layout.addWidget(self.message_prompt)
     
     def saveBtnClicked(self):
-        saved = self.saveAnnotations()
-        if not saved:
+        image_data = self.saveAnnotations()
+        if not image_data:
             return
 
-        image_data = self.current_image_data or {}
         current_video = image_data.get("video_file", "Unknown")
         current_frame = image_data.get("frame_number", "Unknown")
         current_id = image_data.get("id", "Unknown")
@@ -642,6 +641,7 @@ class IntegratedPoseTool(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to load annotations: {str(e)}")
             
     def updateFrameDropdown(self):
+        self.frame_dropdown.blockSignals(True)
         self.frame_dropdown.clear()
         for image in self.annotations.get('images', []):
             if 'id' not in image or 'frame_number' not in image:
@@ -649,6 +649,7 @@ class IntegratedPoseTool(QMainWindow):
             self.frame_dropdown.addItem(
                 f"Frame {image['frame_number']} (ID: {image['id']})", 
                 userData=image['id'])
+        self.frame_dropdown.blockSignals(False)
 
 
     def displayFrame(self, frame, annotation_data=None):
@@ -884,15 +885,14 @@ class IntegratedPoseTool(QMainWindow):
                 
                 self.writeAnnotationsFile()
 
-                self.current_image_data = existing_image
-                self.current_annotation_data = existing_annotation
+                self.setCurrentFrameState(existing_image, existing_annotation, self.current_frame_bgr)
                 self.updateFrameDropdown()
                 self.selectFrameDropdownByImageId(image_id)
                 self.updateMetadataDisplay(existing_image, existing_annotation)
                 
                 QMessageBox.information(self, "Success", 
                                       f"Frame {current_frame} updated successfully!")
-                return True
+                return existing_image
             else:
                 return False
         
@@ -967,7 +967,7 @@ class IntegratedPoseTool(QMainWindow):
             QMessageBox.information(self, "Success", 
                                   f"Frame {current_frame} saved successfully!")
             
-            return True
+            return image_info
         else:
             QMessageBox.warning(self, "Error", "Failed to save current frame image.")
             return False
