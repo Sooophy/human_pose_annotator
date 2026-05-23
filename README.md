@@ -42,7 +42,7 @@ The tool follows the COCO format standard while providing specialized features f
 ```
 python >= 3.6
 PyQt5
-opencv-python
+opencv-python-headless
 numpy
 ```
 
@@ -65,6 +65,13 @@ git clone https://github.com/Sooophy/human_pose_annotator.git
 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
+```
+
+If you previously installed `opencv-python`, replace it with the headless wheel to
+avoid Qt plugin conflicts with PyQt:
+```bash
+pip uninstall opencv-python
+pip install opencv-python-headless
 ```
 
 ## Usage
