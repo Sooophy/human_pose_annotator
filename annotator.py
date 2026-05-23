@@ -13,6 +13,23 @@ from PyQt5.QtCore import Qt, QRectF
 from pose_config import*
 
 
+def prefer_pyqt_qt_plugins():
+    """Avoid OpenCV's bundled Qt plugins shadowing PyQt's platform plugins."""
+    for env_var in ("QT_QPA_PLATFORM_PLUGIN_PATH", "QT_PLUGIN_PATH"):
+        plugin_path = os.environ.get(env_var, "")
+        if not plugin_path:
+            continue
+
+        paths = [
+            path for path in plugin_path.split(os.pathsep)
+            if "cv2" not in path
+        ]
+        if paths:
+            os.environ[env_var] = os.pathsep.join(paths)
+        else:
+            os.environ.pop(env_var, None)
+
+
 class VideoProcessor:
     def __init__(self):
         self.video_path = None
@@ -989,6 +1006,7 @@ class IntegratedPoseTool(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == '__main__':
+    prefer_pyqt_qt_plugins()
     app = QApplication(sys.argv)
     pose_config=PoseConfig()
     tool = IntegratedPoseTool(pose_config)
